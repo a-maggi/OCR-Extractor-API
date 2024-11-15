@@ -1,0 +1,19 @@
+[tool.poetry]
+name = "ocr-extractor-api"
+version = "0.1.0"
+description = "OCR Extraction API using Marker"
+authors = ["Agustin Maggi"]
+
+[tool.poetry.dependencies]
+python = "^3.10"
+fastapi = "^0.104.0"
+uvicorn = "^0.24.0"
+python-multipart = "^0.0.6"
+marker-pdf = "^0.3.10"
+pydantic = "^2.4.1"
+torch = ">=2.4.1"
+torchvision = "^0.20.0"  # Added torchvision which is often needed with PyTorch
+
+[build-system]
+requires = ["poetry-core>=1.0.0"]
+build-backend = "poetry.core.masonry.api"

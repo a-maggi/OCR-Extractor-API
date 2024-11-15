@@ -1,0 +1,8 @@
+services:
+  ocr-extractor:
+    build: .
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./src:/app/src
+    command: poetry run uvicorn src.main:app --host 0.0.0.0 --port 8000 --reload
