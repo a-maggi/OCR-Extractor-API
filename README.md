@@ -59,7 +59,8 @@ poetry run python src/main.py
 
 | Parameter | Type | Required | Default | Description |
 |-----------|------|----------|---------|-------------|
-| filepath | string | Yes | - | The path to the PDF file to convert |
+| url | string | No | - | The URL to the PDF file to convert |
+| filepath | string | No | - | The path to the PDF file to convert |
 | max_pages | integer | No | null | The maximum number of pages in the document to convert |
 | langs | string | No | null | Languages to use for OCR, comma separated (e.g., "en,es"). Uses codes from [Surya's language file](https://github.com/VikParuchuri/surya/blob/master/surya/languages.py) |
 | force_ocr | boolean | No | false | Force OCR on all pages. Warning: Can lead to worse results if PDFs already have good text |
@@ -69,7 +70,7 @@ poetry run python src/main.py
 #### Example Request
 
 ```bash
-curl -X POST "http://localhost:8000/marker" -H "Content-Type: application/json" -d '{"filepath": "https://example.com/path/to/pdf.pdf", "max_pages": 10, "langs": "en,es", "force_ocr": false, "paginate": false, "extract_images": true}'
+curl -X POST "http://localhost:8000/marker" -H "Content-Type: application/json" -d '{"url": "https://example.com/path/to/pdf.pdf", "max_pages": 10, "langs": "en,es", "force_ocr": false, "paginate": false, "extract_images": true}'
 ```
 
 
