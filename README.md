@@ -29,10 +29,10 @@ A FastAPI-based service that provides OCR (Optical Character Recognition) extrac
 make docker/build
 ```
 
-2. Run the Docker container:
+2. Start the Docker container:
 
 ```bash
-make docker/run
+make docker/up
 ```
 
 ### Using Poetry
