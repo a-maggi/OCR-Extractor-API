@@ -4,16 +4,14 @@ import requests
 from pydantic import BaseModel, Field
 from starlette.responses import HTMLResponse
 import logging
-os.environ["PDFTEXT_CPU_WORKERS"] = "1"
 
-import base64
 from contextlib import asynccontextmanager
 from typing import Optional, Annotated
-import io
 
 from fastapi import FastAPI
-from marker.convert import convert_single_pdf
-from marker.models import load_all_models
+from marker.converters.pdf import PdfConverter
+from marker.models import create_model_dict
+from marker.config.parser import ConfigParser
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -22,7 +20,7 @@ app_data = {}
 
 @asynccontextmanager
 async def lifespan(_):
-    app_data["models"] = load_all_models()
+    app_data["models"] = create_model_dict()
 
     yield
 
@@ -75,6 +73,10 @@ class CommonParams(BaseModel):
         bool,
         Field(description="Whether to extract images from the PDF.  Defaults to True.  If set to False, no images will be extracted from the PDF.")
     ] = True
+    output_format: Annotated[
+        str,
+        Field(description="The format of the output.  Defaults to 'markdown'.  Can be 'markdown', 'json', or 'html'.")
+    ] = "json"
 
 
 @app.post("/marker")
@@ -89,7 +91,7 @@ async def convert_pdf(
 
     if params.filepath:
         print(f"Converting {params.filepath} locally.")
-        return await convert_pdf_local(params)
+        return await convert_pdf_local(params, params.filepath)
     elif params.url:
         print(f"Converting {params.url} using pdf remote.")
         return await convert_pdf_remote(params)
@@ -107,18 +109,8 @@ async def convert_pdf_remote(params: CommonParams):
                 tmp_file.write(chunk)
             tmp_file.flush()
             
-            # Create new params with local filepath
-            local_params = CommonParams(
-                filepath=tmp_file.name,
-                max_pages=params.max_pages,
-                langs=params.langs,
-                force_ocr=params.force_ocr,
-                paginate=params.paginate,
-                extract_images=params.extract_images
-            )
-            
             # Use local conversion
-            result = await convert_pdf_local(local_params)
+            result = await convert_pdf_local(params, tmp_file.name)
             
             # Clean up temporary file
             os.unlink(tmp_file.name)
@@ -133,7 +125,7 @@ async def convert_pdf_remote(params: CommonParams):
         }
 
 
-async def convert_pdf_local(params: CommonParams):
+async def convert_pdf_local(params: CommonParams, filepath: str):
     try:
         # log the params
         logger.info("Converting PDF with parameters: %s", {
@@ -142,31 +134,40 @@ async def convert_pdf_local(params: CommonParams):
             "langs": params.langs,
             "force_ocr": params.force_ocr,
             "paginate": params.paginate,
-            "extract_images": params.extract_images
+            "extract_images": params.extract_images,
+            "output_format": params.output_format
         })
+        params_dict = params.model_dump()
+        config_parser = ConfigParser(params_dict)
         
-        full_text, images, metadata = convert_single_pdf(
-            params.filepath,
-            app_data["models"],
-            max_pages=params.max_pages,
-            langs=params.langs.split(",") if params.langs else None,  # Convert string to list
-            ocr_all_pages=params.force_ocr
+        converter = PdfConverter(
+            config=config_parser.generate_config_dict(),
+            artifact_dict=app_data["models"],
+            processor_list=config_parser.get_processors(),
+            renderer=config_parser.get_renderer()
         )
+        
+        result = converter(filepath)
+        if params.output_format == "markdown":
+            logger.info("Converting to markdown, result type: %s", type(result))
+            # Remove the line that tries to access .keys()
+            if hasattr(result, "markdown"):
+                result = result.markdown
+            elif hasattr(result, "text"):
+                result = result.text
+            elif isinstance(result, str):
+                pass  # Result is already a string
+            else:
+                raise ValueError(f"Unexpected result type: {type(result)}")
+        
+        
     except Exception as e:
         return {
             "success": False,
             "error": str(e),
         }
 
-    encoded = {}
-    for k, v in images.items():
-        byte_stream = io.BytesIO()
-        v.save(byte_stream, format="PNG")
-        encoded[k] = base64.b64encode(byte_stream.getvalue()).decode("utf-8")
-
     return {
-        "markdown": full_text,
-        "images": encoded,
-        "metadata": metadata,
+        "output": result,
         "success": True
     }
