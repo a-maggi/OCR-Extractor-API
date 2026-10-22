@@ -1,18 +1,41 @@
+# Internal service: no ports, no domain. Clients reach it over the Docker network (see README, Coolify).
 services:
-  ocr-extractor:
-    build: .
-    ports:
-      - "8001:8000"
-    volumes:
-      - ./src:/app/src
-    command: poetry run uvicorn src.main:app --host 0.0.0.0 --port 8000 --reload
+  ocr:
+    build:
+      context: .
+      target: runtime
+    restart: unless-stopped
     environment:
-      - CUDA_VISIBLE_DEVICES=0
-      - CUDA_LAUNCH_BLOCKING=1
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              count: 1
-              capabilities: [gpu]
+      OCR_API_KEY: ${OCR_API_KEY:?Set OCR_API_KEY to a long random string, the same one clients send}
+      ALLOWED_SOURCE_HOSTS: ${ALLOWED_SOURCE_HOSTS:?Set ALLOWED_SOURCE_HOSTS to the hosts job URLs may point to}
+      REQUIRE_DIGITS: ${REQUIRE_DIGITS:-false}
+      TEXT_WORKERS: ${TEXT_WORKERS:-2}
+      OCR_WORKERS: ${OCR_WORKERS:-1}
+      TORCH_THREADS_PER_WORKER: ${TORCH_THREADS_PER_WORKER:-2}
+      MAX_QUEUED_JOBS: ${MAX_QUEUED_JOBS:-50}
+      JOB_TIMEOUT_SECONDS: ${JOB_TIMEOUT_SECONDS:-600}
+      PREWARM_VLM: ${PREWARM_VLM:-false}
+      # Surya / llama.cpp: concurrent OCR requests (each reserves ~12k tokens of KV cache) and CPU threads
+      SURYA_INFERENCE_PARALLEL: ${SURYA_INFERENCE_PARALLEL:-2}
+      LLAMA_CPP_EXTRA_ARGS: ${LLAMA_CPP_EXTRA_ARGS:---threads 2}
+      FAST_LAYOUT_NUM_THREADS: ${FAST_LAYOUT_NUM_THREADS:-2}
+    volumes:
+      # Model downloads (~1.7 GB once the first scanned document arrives). Not ~/.cache/datalab/surya: it holds
+      # the running servers' pid/port files, which are stale after a restart.
+      - hf-cache:/home/app/.cache/huggingface
+      - datalab-models:/home/app/.cache/datalab/models
+    # Leave headroom for whatever else runs on the machine. Memory: the API process, one process per worker, the
+    # layout and OCR-error servers, and llama-server (~1.5 GB model + KV cache). Measure it (README, Sizing)
+    cpus: ${OCR_CPUS:-4}
+    mem_limit: ${OCR_MEMORY:-6g}
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/readyz', timeout=3)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      # First boot downloads the layout and OCR-error models before /readyz turns green
+      start_period: 300s
+
+volumes:
+  hf-cache:
+  datalab-models:
