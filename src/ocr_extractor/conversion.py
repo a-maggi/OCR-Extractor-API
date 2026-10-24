@@ -6,12 +6,13 @@ other process attaches to.
 """
 
 import gc
+import math
 import os
 import re
 from pathlib import Path
 
 from ocr_extractor.errors import NoReadableText, OcrServerUnavailable
-from ocr_extractor.triage import TriageLimits, looks_empty, text_coverage, triage
+from ocr_extractor.triage import TriageLimits, looks_empty, lossy_pages, text_coverage, triage
 
 _models: dict | None = None
 _limits = TriageLimits()
@@ -51,11 +52,16 @@ def split_pages(markdown: str) -> dict[int, str]:
     return pages
 
 
-def marker_config(*, disable_ocr: bool, force_ocr: bool) -> dict:
+def join_pages(pages: dict[int, str]) -> str:
+    return "\n\n".join(text.strip() for _, text in sorted(pages.items()) if text.strip())
+
+
+def marker_config(*, disable_ocr: bool, force_ocr: bool, page_range: list[int] | None = None) -> dict:
     return {
         "mode": "fast",
         "disable_ocr": disable_ocr,
         "force_ocr": force_ocr,
+        "page_range": page_range,
         "extract_images": False,
         # Page breaks let us check each OCR'd page came back with text; they're removed from the output
         "paginate_output": True,
@@ -68,10 +74,11 @@ def marker_config(*, disable_ocr: bool, force_ocr: bool) -> dict:
     }
 
 
-def _convert(path: str, *, disable_ocr: bool, force_ocr: bool) -> dict:
+def _convert(path: str, *, disable_ocr: bool, force_ocr: bool, page_range: list[int] | None = None) -> dict:
     from marker.converters.pdf import PdfConverter
 
-    converter = PdfConverter(config=marker_config(disable_ocr=disable_ocr, force_ocr=force_ocr), artifact_dict=_models)
+    config = marker_config(disable_ocr=disable_ocr, force_ocr=force_ocr, page_range=page_range)
+    converter = PdfConverter(config=config, artifact_dict=_models)
     try:
         rendered = converter(path)
         pages = split_pages(rendered.markdown)
@@ -81,7 +88,8 @@ def _convert(path: str, *, disable_ocr: bool, force_ocr: bool) -> dict:
             if page.get("text_extraction_method") == "surya"
         ]
         return {
-            "markdown": "\n\n".join(text.strip() for _, text in sorted(pages.items()) if text.strip()),
+            "markdown": join_pages(pages),
+            "page_markdown": pages,
             "pages": converter.page_count,
             "ocr_pages": len(ocr_page_ids),
             "ocr_pages_without_text": sum(1 for page_id in ocr_page_ids if not pages.get(page_id, "").strip()),
@@ -91,43 +99,46 @@ def _convert(path: str, *, disable_ocr: bool, force_ocr: bool) -> dict:
         gc.collect()
 
 
+def _route_to_ocr(reason: str, pages: int, force_ocr: bool, **extra) -> dict:
+    return {"route": "ocr", "reason": reason, "pages": pages, "force_ocr": force_ocr, **extra}
+
+
+def _percent(share: float) -> int:
+    return math.floor(share * 100 + 1e-9)
+
+
 def text_lane(path: str) -> dict:
-    """Uses the PDF's own text when it's good. Otherwise returns {"route": "ocr"} so the job moves lanes."""
+    """Uses the PDF's own text when it's good. Otherwise returns {"route": "ocr"} so the job moves lanes. A route
+    that carries "partial" asks for only the pages that lost text, and holds the result to fall back on."""
     result = triage(Path(path), _models["ocr_error_model"], _limits)
     if result.lane == "ocr":
         # Marker keeps a scanner's invisible OCR layer as if it were real text, so OCR every page instead.
         # (Not strip_existing_ocr: Marker 2.0's code for it calls a pypdfium2 method that 5.x removed.)
-        return {
-            "route": "ocr",
-            "reason": result.reason,
-            "pages": result.pages,
-            "force_ocr": result.replace_ocr_layer,
-        }
+        return _route_to_ocr(result.reason, result.pages, result.replace_ocr_layer)
 
     converted = _convert(path, disable_ocr=True, force_ocr=False)
     if looks_empty(converted["markdown"], _limits.require_digits):
         # Marker would trust the same text layer again, so OCR every page instead
-        return {
-            "route": "ocr",
-            "reason": "the text layer had no real content",
-            "pages": converted["pages"],
-            "force_ocr": True,
-        }
-    coverage = text_coverage(result.text, converted["markdown"])
-    if coverage < _limits.min_text_coverage:
-        # Marker would trust the same text layer again, so OCR every page to read back what it dropped
-        return {
-            "route": "ocr",
-            "reason": f"the text lane lost part of the text layer (coverage {coverage:.0%})",
-            "pages": converted["pages"],
-            "force_ocr": True,
-        }
+        return _route_to_ocr("the text layer had no real content", converted["pages"], True)
+
+    lossy = lossy_pages(result.page_texts, converted["page_markdown"], _limits.min_text_coverage)
+    if lossy:
+        kept = ", ".join(f"page {index + 1} kept {_percent(share)}%" for index, share in lossy.items())
+        # Marker would trust the same text layer again, so force OCR on the pages that lost text
+        return _route_to_ocr(
+            f"the text lane lost part of the text layer: {kept}",
+            converted["pages"],
+            True,
+            partial={"layers": {index: result.page_texts[index] for index in lossy}, "text_result": converted},
+        )
     return converted
 
 
-def ocr_lane(path: str, force_ocr: bool) -> dict:
-    """Fast mode with OCR on: Marker keeps the good pages' text and OCRs only the scanned or garbled ones."""
-    result = _convert(path, disable_ocr=False, force_ocr=force_ocr)
+def ocr_lane(path: str, force_ocr: bool, partial: dict | None = None) -> dict:
+    """Fast mode with OCR on: Marker keeps the good pages' text and OCRs only the scanned or garbled ones. With
+    `partial` (from the text lane), OCRs only the pages that lost text and splices them into its result."""
+    page_range = sorted(partial["layers"]) if partial else None
+    result = _convert(path, disable_ocr=False, force_ocr=force_ocr, page_range=page_range)
 
     # Surya turns a failed OCR request (a dead llama-server, a timeout) into empty text and Marker drops it, so a
     # finished conversion can be missing pages. Check the server survived, and that OCR'd pages aren't all empty.
@@ -138,7 +149,20 @@ def ocr_lane(path: str, force_ocr: bool) -> dict:
         raise OcrServerUnavailable("Every OCR'd page came back empty")
     if looks_empty(result["markdown"], _limits.require_digits):
         raise NoReadableText("OCR found no readable text in the document")
-    return result
+    return splice_ocr_pages(partial, result) if partial else result
+
+
+def splice_ocr_pages(partial: dict, ocr: dict) -> dict:
+    """The text lane's result, with each lossy page replaced by its OCR'd text when that kept more of the text layer."""
+    text_result = partial["text_result"]
+    pages = dict(text_result["page_markdown"])
+    replaced = 0
+    for index, layer in partial["layers"].items():
+        ocr_text = ocr["page_markdown"].get(index, "")
+        if text_coverage(layer, ocr_text) > text_coverage(layer, pages.get(index, "")):
+            pages[index] = ocr_text
+            replaced += 1
+    return {"markdown": join_pages(pages), "pages": text_result["pages"], "ocr_pages": replaced}
 
 
 def ocr_server_healthy() -> bool:

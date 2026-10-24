@@ -6,7 +6,7 @@ Runs inside a text-lane worker, before conversion. It never calls the OCR model,
 import re
 import unicodedata
 from collections import Counter
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, Literal, Protocol, Sequence
 
@@ -19,7 +19,6 @@ INVISIBLE_RENDER_MODES = {pdfium_c.FPDF_TEXTRENDERMODE_INVISIBLE, pdfium_c.FPDF_
 
 # A number keeps its decimal and thousands separators ("1.234,5"); a word is a run of letters
 TOKEN = re.compile(r"\d+(?:[.,]\d+)*|[^\W\d_]+")
-
 # A word hyphenated across lines ("hemo-" then "globina"), and the tags Marker writes for exponents
 LINE_BREAK_HYPHEN = re.compile(r"(?<=[^\W\d_])-[ \t]*\r?\n[ \t]*(?=[^\W\d_A-Z])")
 EXPONENT_TAG = re.compile(r"</?su[bp]>")
@@ -43,8 +42,8 @@ class TriageLimits:
     image_page_min_chars: int = 200
     # Output without a single digit counts as empty, for documents that always contain numbers
     require_digits: bool = False
-    # Text-lane output that kept less than this share of the text layer's words and numbers is lossy
-    min_text_coverage: float = 0.9
+    # A text-lane page that kept less than this share of its text layer's words and numbers is lossy
+    min_text_coverage: float = 0.98
 
 
 @dataclass
@@ -73,8 +72,8 @@ class TriageResult:
     pages: int
     # The PDF carries a scanner's invisible OCR layer: OCR should replace it rather than trust it
     replace_ocr_layer: bool = False
-    # Every page's text layer, for checking what the conversion kept
-    text: str = ""
+    # Each page's text layer, for checking what the conversion kept
+    page_texts: list[str] = field(default_factory=list)
 
 
 def _image_coverage(page: pdfium.PdfPage, images: list[tuple[float, float, float, float]]) -> float:
@@ -157,7 +156,7 @@ def triage(path: Path, ocr_error_model: OcrErrorModel, limits: TriageLimits) -> 
         if bad:
             return TriageResult("ocr", f"garbled text on page {', '.join(bad)}", len(pages))
 
-    return TriageResult("text", "text layer looks good", len(pages), text="\n".join(page.text for page in pages))
+    return TriageResult("text", "text layer looks good", len(pages), page_texts=[page.text for page in pages])
 
 
 def looks_empty(markdown: str, require_digits: bool = False) -> bool:
@@ -185,3 +184,9 @@ def text_coverage(text_layer: str, markdown: str) -> float:
     if not total:
         return 1.0
     return sum((wanted & _tokens(markdown)).values()) / total
+
+
+def lossy_pages(page_texts: list[str], page_markdown: dict[int, str], min_coverage: float) -> dict[int, float]:
+    """The coverage of each page that kept less than min_coverage of its text layer, by page index."""
+    coverage = {index: text_coverage(text, page_markdown.get(index, "")) for index, text in enumerate(page_texts)}
+    return {index: value for index, value in coverage.items() if value < min_coverage}

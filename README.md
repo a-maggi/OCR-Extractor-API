@@ -13,7 +13,7 @@ An internal service that turns PDFs into markdown with [Marker 2.0](https://gith
   2. Marker's OCR-error model checks the text of the remaining pages; garbled text (a broken font encoding) sends the job to the OCR lane.
   3. Otherwise Marker converts the text layer in `fast` mode with OCR off: pure CPU, no OCR model.
   4. If that output is nearly empty (or, with `REQUIRE_DIGITS=true`, has no numbers at all), the job moves to the OCR lane once, with every page OCR'd.
-  5. Marker's fast mode with OCR off drops lines and tables it can't place. So the output is compared with the PDF's text layer, and if it kept less than `MIN_TEXT_COVERAGE` of the words and numbers, the job moves to the OCR lane the same way. The job's `reason` says the coverage.
+  5. Marker's fast mode with OCR off drops lines and tables it can't place. So each page's output is compared with that page's text layer, and a page that kept less than `MIN_TEXT_COVERAGE` of its words and numbers is OCR'd (with `force_ocr`) in the OCR lane. The other pages keep the text layer's text. The job's `reason` names the pages and what they kept. If the OCR move fails or times out, the job finishes with the text lane's result and says so in `reason`.
 - **The OCR lane** runs Marker in `fast` mode with OCR on, through the Surya OCR model served by `llama-server`. It keeps the good pages' text and OCRs only the scanned or garbled ones. A document with a scanner's OCR layer gets every page OCR'd, since Marker would otherwise keep that layer as if it were real text.
 - **OCR results are checked.** Surya turns a failed OCR request into empty text, so a "finished" conversion could be missing pages. After each OCR-lane conversion the worker probes `llama-server`. If it's down, or every OCR'd page came back empty, the worker drops its connection and the job is retried once, which reattaches to or restarts the server. Output with no readable text fails the job.
 - **Each lane has its own worker processes** (`TEXT_WORKERS`, `OCR_WORKERS`):
@@ -68,7 +68,7 @@ A job looks like this:
 | `MAX_DOWNLOAD_BYTES` / `DOWNLOAD_TIMEOUT_SECONDS` | `10485760` / `30` | Download limits |
 | `MIN_PAGE_CHARS` | `20` | Fewer characters than this on a page with images counts as "mostly an image" |
 | `IMAGE_COVERAGE_THRESHOLD` / `IMAGE_PAGE_MIN_CHARS` | `0.65` / `200` | A page whose images cover at least this share of it needs this many visible characters to count as digital; otherwise it's a scan with a stamp on top |
-| `MIN_TEXT_COVERAGE` | `0.9` | The share of the text layer's words and numbers the text lane's output must keep; below it the job is OCR'd instead, every page, which takes far longer than the text lane. `0` turns the check off |
+| `MIN_TEXT_COVERAGE` | `0.98` | The share of a page's text-layer words and numbers the text lane's output must keep; a page below it is OCR'd instead, which takes far longer than the text lane. `0` turns the check off |
 | `PREWARM_VLM` | `false` | Start `llama-server` at boot instead of on the first scanned document. If it fails, startup carries on and the first scanned document tries again |
 | `WARMUP` | `true` | Run one small conversion at boot so `/readyz` means the layout and OCR-error servers are up |
 | `STARTUP_RETRY_SECONDS` | `10` | Wait before retrying a failed startup; doubles each time, up to 5 minutes |

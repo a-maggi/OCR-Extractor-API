@@ -1,11 +1,12 @@
 from dataclasses import dataclass
 from pathlib import Path
 
+import pypdfium2 as pdfium
 import pytest
 
 from ocr_extractor.conversion import split_pages
 from ocr_extractor.pdfgen import text_pdf
-from ocr_extractor.triage import TriageLimits, looks_empty, read_pages, text_coverage, triage
+from ocr_extractor.triage import TriageLimits, looks_empty, lossy_pages, read_pages, text_coverage, triage
 from pdfs import FULL_PAGE, image_pdf
 
 LIMITS = TriageLimits()
@@ -169,11 +170,6 @@ def test_text_coverage_of_a_text_layer_without_tokens_is_complete():
     assert text_coverage("  -- ", "") == 1
 
 
-def test_a_text_lane_triage_carries_the_text_layer(digital_pdf: Path):
-    result = triage(digital_pdf, all_good, LIMITS)
-    assert "Toner cartridge 2 x 38.50" in result.text
-
-
 def test_text_coverage_folds_compatibility_characters():
     assert text_coverage("10\u00b3/\u00b5L", "10<sup>3</sup>/\u03bcL") == 1
     assert text_coverage("\u00b5mol \uff11\uff12\uff13", "\u03bcmol 123") == 1
@@ -192,6 +188,28 @@ def test_text_coverage_joins_words_hyphenated_across_lines():
 
 def test_text_coverage_keeps_a_hyphen_before_a_capital_or_a_number():
     assert text_coverage("anti-\nHIV 1-\n2", "anti HIV 1 2") == 1
+
+
+def test_lossy_pages_scores_each_page_against_its_own_text_layer():
+    layers = ["alpha bravo charlie delta", "echo foxtrot golf hotel", "india juliet"]
+    markdown = {0: "alpha bravo charlie delta", 1: "echo foxtrot", 2: "alpha bravo india juliet"}
+    assert lossy_pages(layers, markdown, 0.9) == {1: 0.5}
+    assert lossy_pages(layers, markdown, 0.5) == {}
+    assert lossy_pages(layers, markdown, 0) == {}
+    assert lossy_pages(layers, {}, 0.9) == {0: 0, 1: 0, 2: 0}
+
+
+def test_a_text_lane_triage_carries_each_pages_text_layer(digital_pdf: Path, tmp_path: Path):
+    second = write(tmp_path, "second.pdf", text_pdf(["Second page, glucose 98 mg/dL"]))
+    document = pdfium.PdfDocument(str(digital_pdf))
+    document.import_pages(pdfium.PdfDocument(str(second)))
+    path = tmp_path / "two-pages.pdf"
+    document.save(str(path))
+
+    result = triage(path, all_good, LIMITS)
+    assert result.lane == "text" and result.pages == 2
+    assert "Toner cartridge 2 x 38.50" in result.page_texts[0]
+    assert "glucose 98" in result.page_texts[1] and "Toner" not in result.page_texts[1]
 
 
 def test_split_pages_reads_markers_page_breaks():

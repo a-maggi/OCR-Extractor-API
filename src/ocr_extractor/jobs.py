@@ -27,6 +27,7 @@ class JobStatus(StrEnum):
 
 
 TERMINAL = {JobStatus.DONE, JobStatus.FAILED}
+OCR_FAILURES = (ConversionTimeout, WorkerCrashed, WorkerUnavailable, OcrServerUnavailable, NoReadableText)
 
 
 class QueueFull(Exception):
@@ -100,8 +101,8 @@ class Pipeline:
 
     download: Callable[[str, Path], Awaitable[None]]
     text_fn: Callable[[str], dict]
-    # (path, force_ocr)
-    ocr_fn: Callable[[str, bool], dict]
+    # (path, force_ocr, partial): partial is the text lane's request to OCR only some pages, or None
+    ocr_fn: Callable[[str, bool, dict | None], dict]
 
 
 class JobRegistry:
@@ -185,8 +186,7 @@ class JobRegistry:
             else:
                 result = await self._convert(job, self.text_lane, self.pipeline.text_fn, (str(path),))
                 if result.get("route") == "ocr":
-                    # Triage found no usable text layer, or the text-lane output looked empty: one move to OCR
-                    result = await self._ocr(job, path, force_ocr=bool(result.get("force_ocr")), reason=result["reason"])
+                    result = await self._move_to_ocr(job, path, result)
 
             job.update(
                 "done",
@@ -221,8 +221,22 @@ class JobRegistry:
         finally:
             shutil.rmtree(workdir, ignore_errors=True)
 
-    async def _ocr(self, job: Job, path: Path, *, force_ocr: bool, reason: str) -> dict:
-        args = (str(path), force_ocr)
+    async def _move_to_ocr(self, job: Job, path: Path, route: dict) -> dict:
+        """The text lane's one move to OCR. If it fails and the text lane kept a result, that result is the answer."""
+        partial = route.get("partial")
+        force_ocr = bool(route["force_ocr"])
+        try:
+            return await self._ocr(job, path, force_ocr=force_ocr, reason=route["reason"], partial=partial)
+        except OCR_FAILURES as error:
+            if not partial:
+                raise
+            logger.warning("job %s: OCR failed (%s), keeping the text lane's result", job.id, error)
+            reason = f"{route['reason']}; OCR failed ({error}), so the text lane's result is kept"
+            job.update("routed", lane=self.text_lane.name, reason=reason)
+            return partial["text_result"]
+
+    async def _ocr(self, job: Job, path: Path, *, force_ocr: bool, reason: str, partial: dict | None = None) -> dict:
+        args = (str(path), force_ocr, partial)
         try:
             return await self._convert(job, self.ocr_lane, self.pipeline.ocr_fn, args, reason)
         except OcrServerUnavailable as error:

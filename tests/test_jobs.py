@@ -43,14 +43,28 @@ async def test_a_slow_ocr_job_does_not_block_text_jobs(make_registry):
         await registry.stop()
 
 
-async def test_lossy_text_lane_output_moves_to_ocr_with_its_coverage_as_the_reason(make_registry):
+async def test_lossy_pages_move_to_ocr_with_the_text_lanes_result_to_splice_into(make_registry):
     registry = make_registry()
     await registry.start()
     try:
         lossy, _ = registry.submit("lossy", BASE + "lossy", force_ocr=False)
         await wait_until_finished(registry, ["lossy"])
-        assert lossy.lane == "ocr" and lossy.markdown.endswith("force_ocr=True")
-        assert lossy.reason == "the text lane lost part of the text layer (coverage 78%)"
+        assert lossy.lane == "ocr" and lossy.markdown.endswith("partial=True force_ocr=True")
+        assert lossy.reason == "the text lane lost part of the text layer: page 2 kept 78%"
+    finally:
+        await registry.stop()
+
+
+@pytest.mark.parametrize("failure", ["timeout", "crash", "dead-server", "unreadable"])
+async def test_a_failed_ocr_move_of_lossy_pages_finishes_with_the_text_lanes_result(make_registry, failure):
+    registry = make_registry()
+    await registry.start()
+    try:
+        job, _ = registry.submit("lossy", BASE + f"lossy-{failure}", force_ocr=False)
+        await wait_until_finished(registry, ["lossy"])
+        assert job.status == JobStatus.DONE and job.lane == "text"
+        assert (job.markdown, job.pages, job.ocr_pages) == ("Invoice total 119.00", 2, 0)
+        assert job.reason.startswith("the text lane lost part of the text layer: page 2 kept 78%; OCR failed (")
     finally:
         await registry.stop()
 
