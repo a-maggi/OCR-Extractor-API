@@ -48,6 +48,8 @@ def fake_ocr_lane(path: str, force_ocr: bool, partial: dict | None = None) -> di
         raise OcrServerUnavailable("The OCR model server stopped responding during the conversion")
     if b"unreadable" in content:
         raise NoReadableText("OCR found no readable text in the document")
+    if b"bug" in content:
+        raise RuntimeError("boom")
     if b"timeout" in content:
         raise ConversionTimeout("Conversion timed out after 600s")
     if b"crash" in content:

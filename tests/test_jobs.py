@@ -55,16 +55,43 @@ async def test_lossy_pages_move_to_ocr_with_the_text_lanes_result_to_splice_into
         await registry.stop()
 
 
-@pytest.mark.parametrize("failure", ["timeout", "crash", "dead-server", "unreadable"])
+@pytest.mark.parametrize("failure", ["timeout", "crash", "dead-server", "unreadable", "bug"])
 async def test_a_failed_ocr_move_of_lossy_pages_finishes_with_the_text_lanes_result(make_registry, failure):
     registry = make_registry()
     await registry.start()
     try:
         job, _ = registry.submit("lossy", BASE + f"lossy-{failure}", force_ocr=False)
         await wait_until_finished(registry, ["lossy"])
-        assert job.status == JobStatus.DONE and job.lane == "text"
-        assert (job.markdown, job.pages, job.ocr_pages) == ("Invoice total 119.00", 2, 0)
+        # Reported like an OCR move where no page improved, so callers don't OCR it again
+        assert job.status == JobStatus.DONE and job.lane == "ocr" and job.ocr_pages == 0
+        assert (job.markdown, job.pages) == ("Invoice total 119.00", 2)
         assert job.reason.startswith("the text lane lost part of the text layer: page 2 kept 78%; OCR failed (")
+        assert job.reason.endswith("so the text lane's result is kept")
+    finally:
+        await registry.stop()
+
+
+async def test_a_failed_scan_still_fails_the_job_instead_of_falling_back(make_registry):
+    registry = make_registry()
+    await registry.start()
+    try:
+        job, _ = registry.submit("scan", BASE + "scan-unreadable", force_ocr=False)
+        await wait_until_finished(registry, ["scan"])
+        assert job.status == JobStatus.FAILED
+    finally:
+        await registry.stop()
+
+
+async def test_cancelling_a_job_during_the_ocr_of_lossy_pages_cancels_it(make_registry):
+    registry = make_registry()
+    await registry.start()
+    try:
+        job, _ = registry.submit("lossy", BASE + "lossy-slow", force_ocr=False)
+        await asyncio.sleep(0.4)
+        assert job.status == JobStatus.CONVERTING and job.lane == "ocr"
+        registry.cancel("lossy")
+        await wait_until_finished(registry, ["lossy"])
+        assert job.status == JobStatus.FAILED and job.error == "Cancelled"
     finally:
         await registry.stop()
 
