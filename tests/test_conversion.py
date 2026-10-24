@@ -21,6 +21,13 @@ def fake_convert(markdown: str, *, ocr_pages: int, ocr_pages_without_text: int):
     return convert
 
 
+@pytest.mark.parametrize("lane", [{"disable_ocr": True, "force_ocr": False}, {"disable_ocr": False, "force_ocr": True}])
+def test_both_lanes_keep_page_headers_and_footers(lane):
+    config = conversion.marker_config(**lane)
+    assert config["keep_pageheader_in_output"] and config["keep_pagefooter_in_output"]
+    assert config["disable_ocr"] == lane["disable_ocr"] and config["force_ocr"] == lane["force_ocr"]
+
+
 @pytest.fixture
 def healthy(monkeypatch):
     state = {"healthy": True}

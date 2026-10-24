@@ -51,21 +51,27 @@ def split_pages(markdown: str) -> dict[int, str]:
     return pages
 
 
-def _convert(path: str, *, disable_ocr: bool, force_ocr: bool) -> dict:
-    from marker.converters.pdf import PdfConverter
-
-    config = {
+def marker_config(*, disable_ocr: bool, force_ocr: bool) -> dict:
+    return {
         "mode": "fast",
         "disable_ocr": disable_ocr,
         "force_ocr": force_ocr,
         "extract_images": False,
         # Page breaks let us check each OCR'd page came back with text; they're removed from the output
         "paginate_output": True,
+        # Lab names and notes about decimal separators live in headers and footers
+        "keep_pageheader_in_output": True,
+        "keep_pagefooter_in_output": True,
         # pdftext starts its own process pool above 1 worker, which deadlocks inside ours
         "pdftext_workers": 1,
         "disable_tqdm": True,
     }
-    converter = PdfConverter(config=config, artifact_dict=_models)
+
+
+def _convert(path: str, *, disable_ocr: bool, force_ocr: bool) -> dict:
+    from marker.converters.pdf import PdfConverter
+
+    converter = PdfConverter(config=marker_config(disable_ocr=disable_ocr, force_ocr=force_ocr), artifact_dict=_models)
     try:
         rendered = converter(path)
         pages = split_pages(rendered.markdown)
