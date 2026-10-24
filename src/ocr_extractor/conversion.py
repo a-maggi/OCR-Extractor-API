@@ -12,7 +12,7 @@ import re
 from pathlib import Path
 
 from ocr_extractor.errors import NoReadableText, OcrServerUnavailable
-from ocr_extractor.triage import TriageLimits, looks_empty, lossy_pages, text_coverage, triage
+from ocr_extractor.triage import TriageLimits, looks_empty, lossy_pages, numbers_lost, text_coverage, triage
 
 _models: dict | None = None
 _limits = TriageLimits()
@@ -109,6 +109,10 @@ def _percent(share: float) -> int:
     return math.floor(share * 100 + 1e-9)
 
 
+def _pages(numbers: list[int]) -> str:
+    return f"{'page' if len(numbers) == 1 else 'pages'} {', '.join(str(number) for number in numbers)}"
+
+
 def text_lane(path: str) -> dict:
     """Uses the PDF's own text when it's good. Otherwise returns {"route": "ocr"} so the job moves lanes. A route
     that carries "partial" asks for only the pages that lost text, and holds the result to fall back on."""
@@ -125,14 +129,15 @@ def text_lane(path: str) -> dict:
 
     lossy = lossy_pages(result.page_texts, converted["page_markdown"], _limits.min_text_coverage)
     if lossy:
-        kept = ", ".join(f"page {index + 1} kept {_percent(share)}%" for index, share in lossy.items())
+        worst = sorted(sorted(lossy), key=lossy.get)[: _limits.max_rerouted_pages]
+        kept = ", ".join(f"page {index + 1} kept {_percent(lossy[index])}%" for index in sorted(worst))
+        reason = f"the text lane lost part of the text layer: {kept}"
+        if skipped := sorted(set(lossy) - set(worst)):
+            left = _pages([index + 1 for index in skipped])
+            reason += f"; {left} also lost text, not OCR'd (limit: {_limits.max_rerouted_pages} per job)"
         # Marker would trust the same text layer again, so force OCR on the pages that lost text
-        return _route_to_ocr(
-            f"the text lane lost part of the text layer: {kept}",
-            converted["pages"],
-            True,
-            partial={"layers": {index: result.page_texts[index] for index in lossy}, "text_result": converted},
-        )
+        partial = {"layers": {index: result.page_texts[index] for index in worst}, "text_result": converted}
+        return _route_to_ocr(reason, converted["pages"], True, partial=partial)
     return converted
 
 
@@ -147,22 +152,25 @@ def ocr_lane(path: str, force_ocr: bool, partial: dict | None = None) -> dict:
     # Some empty pages are normal: the blank back side of a scanned sheet.
     if not ocr_server_healthy():
         raise OcrServerUnavailable("The OCR model server stopped responding during the conversion")
+    if partial:
+        return _splice_ocr_pages(partial, result)
     if result["ocr_pages"] and result["ocr_pages_without_text"] == result["ocr_pages"]:
         raise OcrServerUnavailable("Every OCR'd page came back empty")
     if looks_empty(result["markdown"], _limits.require_digits):
         raise NoReadableText("OCR found no readable text in the document")
-    return splice_ocr_pages(partial, result) if partial else result
+    return result
 
 
-def splice_ocr_pages(partial: dict, ocr: dict) -> dict:
-    """The text lane's result, with each lossy page replaced by its OCR'd text when that kept more of the text layer."""
+def _splice_ocr_pages(partial: dict, ocr: dict) -> dict:
+    """The text lane's result with each lossy page replaced by its OCR'd text, when that kept more of the text layer
+    and every number the text lane's page had. An empty OCR page therefore never replaces anything."""
     text_result = partial["text_result"]
     pages = dict(text_result["page_markdown"])
     replaced = 0
     for index, layer in partial["layers"].items():
-        ocr_text = ocr["page_markdown"].get(index, "")
-        if text_coverage(layer, ocr_text) > text_coverage(layer, pages.get(index, "")):
-            pages[index] = ocr_text
+        before, after = pages.get(index, ""), ocr["page_markdown"].get(index, "")
+        if text_coverage(layer, after) > text_coverage(layer, before) and not numbers_lost(before, after):
+            pages[index] = after
             replaced += 1
     return {"markdown": join_pages(pages), "pages": text_result["pages"], "ocr_pages": replaced}
 

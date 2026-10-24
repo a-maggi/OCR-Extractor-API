@@ -13,9 +13,12 @@ An internal service that turns PDFs into markdown with [Marker 2.0](https://gith
   2. Marker's OCR-error model checks the text of the remaining pages; garbled text (a broken font encoding) sends the job to the OCR lane.
   3. Otherwise Marker converts the text layer in `fast` mode with OCR off: pure CPU, no OCR model.
   4. If that output is nearly empty (or, with `REQUIRE_DIGITS=true`, has no numbers at all), the job moves to the OCR lane once, with every page OCR'd.
-  5. Marker's fast mode with OCR off drops lines and tables it can't place. So each page's output is compared with that page's text layer, and a page that kept less than `MIN_TEXT_COVERAGE` of its words and numbers is OCR'd (with `force_ocr`) in the OCR lane. The other pages keep the text layer's text. The job's `reason` names the pages and what they kept. If the OCR move fails or times out, the job finishes with the text lane's result and says so in `reason`.
+  5. Marker's fast mode with OCR off drops lines and tables it can't place. So each page's output is compared with that page's text layer, and a page that kept less than `MIN_TEXT_COVERAGE` of its words and numbers (and lost at least two) is OCR'd in the OCR lane, with `force_ocr`. At most `MAX_REROUTED_PAGES` pages are OCR'd, the lowest-scoring first.
+     - An OCR'd page replaces the text lane's page only if it kept more of the text layer and every number the text lane's page had. Every other page keeps the text layer's text.
+     - The job's `reason` names the pages and what they kept.
+     - If the OCR move fails or times out, the job still finishes with the text lane's result: `lane` is `ocr`, `ocr_pages` is 0, and `reason` says OCR failed.
 - **The OCR lane** runs Marker in `fast` mode with OCR on, through the Surya OCR model served by `llama-server`. It keeps the good pages' text and OCRs only the scanned or garbled ones. A document with a scanner's OCR layer gets every page OCR'd, since Marker would otherwise keep that layer as if it were real text.
-- **OCR results are checked.** Surya turns a failed OCR request into empty text, so a "finished" conversion could be missing pages. After each OCR-lane conversion the worker probes `llama-server`. If it's down, or every OCR'd page came back empty, the worker drops its connection and the job is retried once, which reattaches to or restarts the server. Output with no readable text fails the job.
+- **OCR results are checked.** Surya turns a failed OCR request into empty text, so a "finished" conversion could be missing pages. After each OCR-lane conversion the worker probes `llama-server`. If it's down, or every OCR'd page came back empty, the worker drops its connection and the job is retried once, which reattaches to or restarts the server. Output with no readable text fails the job. When only a few lossy pages are OCR'd, the probe is the check: an empty OCR page just doesn't replace its text-lane page.
 - **Each lane has its own worker processes** (`TEXT_WORKERS`, `OCR_WORKERS`):
   - A conversion that runs past `JOB_TIMEOUT_SECONDS` is killed and its worker restarted, without touching the others.
   - A worker that dies while idle (the OOM killer, say) is replaced before its next job.
@@ -69,6 +72,7 @@ A job looks like this:
 | `MIN_PAGE_CHARS` | `20` | Fewer characters than this on a page with images counts as "mostly an image" |
 | `IMAGE_COVERAGE_THRESHOLD` / `IMAGE_PAGE_MIN_CHARS` | `0.65` / `200` | A page whose images cover at least this share of it needs this many visible characters to count as digital; otherwise it's a scan with a stamp on top |
 | `MIN_TEXT_COVERAGE` | `0.98` | The share of a page's text-layer words and numbers the text lane's output must keep; a page below it is OCR'd instead, which takes far longer than the text lane. `0` turns the check off |
+| `MAX_REROUTED_PAGES` | `4` | Most lossy pages OCR'd in one job, the lowest-scoring first; the rest keep the text lane's text and the `reason` says so. Size it so that many pages fit `JOB_TIMEOUT_SECONDS` on your CPU |
 | `PREWARM_VLM` | `false` | Start `llama-server` at boot instead of on the first scanned document. If it fails, startup carries on and the first scanned document tries again |
 | `WARMUP` | `true` | Run one small conversion at boot so `/readyz` means the layout and OCR-error servers are up |
 | `STARTUP_RETRY_SECONDS` | `10` | Wait before retrying a failed startup; doubles each time, up to 5 minutes |

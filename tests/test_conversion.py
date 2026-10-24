@@ -106,16 +106,18 @@ def scripted_convert(text_pages: dict[int, str], ocr_pages: dict[int, str] | Non
             "page_markdown": pages,
             "pages": len(pages),
             "ocr_pages": 0 if disable_ocr else len(pages),
-            "ocr_pages_without_text": 0,
+            "ocr_pages_without_text": 0 if disable_ocr else sum(1 for text in pages.values() if not text.strip()),
         }
 
     return convert
 
 
-def text_lane_over(monkeypatch, digital_pdf, layers: list[str], kept: list[str], min_coverage: float | None = 0.9) -> dict:
+def text_lane_over(
+    monkeypatch, digital_pdf, layers: list[str], kept: list[str], min_coverage: float | None = 0.9, **limits
+) -> dict:
     """Runs the text lane on a document whose pages have these text layers and whose conversion kept `kept`."""
     if min_coverage is not None:
-        monkeypatch.setattr(conversion, "_limits", TriageLimits(min_text_coverage=min_coverage))
+        monkeypatch.setattr(conversion, "_limits", TriageLimits(min_text_coverage=min_coverage, **limits))
     monkeypatch.setattr(conversion, "_models", {"ocr_error_model": None})
     result = TriageResult("text", "text layer looks good", len(layers), page_texts=layers)
     monkeypatch.setattr(conversion, "triage", lambda path, model, limits: result)
@@ -147,9 +149,30 @@ def test_a_document_where_every_page_is_lossy_reroutes_every_page(monkeypatch, d
 
 
 def test_a_page_exactly_at_the_threshold_stays_in_the_text_lane(monkeypatch, digital_pdf):
-    result = text_lane_over(monkeypatch, digital_pdf, [layer()], [layer(words=9)], min_coverage=0.9)
+    result = text_lane_over(monkeypatch, digital_pdf, [layer()], [layer(words=8)], min_coverage=0.8)
     assert "route" not in result
-    assert text_lane_over(monkeypatch, digital_pdf, [layer()], [layer(words=9)], min_coverage=0.91)["route"] == "ocr"
+    assert text_lane_over(monkeypatch, digital_pdf, [layer()], [layer(words=8)], min_coverage=0.81)["route"] == "ocr"
+
+
+def test_a_page_that_lost_a_single_word_stays_in_the_text_lane(monkeypatch, digital_pdf):
+    result = text_lane_over(monkeypatch, digital_pdf, [layer()], [layer(words=9)], min_coverage=0.99)
+    assert "route" not in result
+
+
+def test_only_the_lowest_scoring_pages_are_ocrd_up_to_the_cap(monkeypatch, digital_pdf):
+    kept = [layer(words=4), layer(words=2), layer(words=6), layer(words=3), layer()]
+    result = text_lane_over(monkeypatch, digital_pdf, [layer()] * 5, kept, max_rerouted_pages=2)
+    assert sorted(result["partial"]["layers"]) == [1, 3]
+    assert result["reason"] == (
+        "the text lane lost part of the text layer: page 2 kept 20%, page 4 kept 30%"
+        "; pages 1, 3 also lost text, not OCR'd (limit: 2 per job)"
+    )
+
+
+def test_one_page_over_the_cap_is_named_in_the_singular(monkeypatch, digital_pdf):
+    kept = [layer(words=2), layer(words=3)]
+    result = text_lane_over(monkeypatch, digital_pdf, [layer()] * 2, kept, max_rerouted_pages=1)
+    assert result["reason"].endswith("; page 2 also lost text, not OCR'd (limit: 1 per job)")
 
 
 def test_the_default_threshold_reroutes_a_page_that_lost_three_words_in_a_hundred(monkeypatch, digital_pdf):
@@ -166,8 +189,10 @@ def test_a_zero_threshold_turns_the_coverage_check_off(monkeypatch, digital_pdf)
     assert result["markdown"] == layer(words=3)
 
 
-def test_percentages_are_floored_so_they_never_reach_the_threshold(monkeypatch):
-    assert [conversion._percent(share) for share in (0.896, 0.9, 0.29, 0)] == [89, 90, 29, 0]
+def test_the_reported_share_is_floored_so_it_never_reaches_the_threshold(monkeypatch, digital_pdf):
+    tokens = [a + b for a in "abcdefghij" for b in "klmnopqrstuvw"][:125]
+    result = text_lane_over(monkeypatch, digital_pdf, [" ".join(tokens)], [" ".join(tokens[13:])], min_coverage=0.9)
+    assert result["reason"] == "the text lane lost part of the text layer: page 1 kept 89%"
 
 
 def ocr_lane_over(monkeypatch, healthy, text_pages: dict, ocr_pages: dict, layers: dict, calls=None) -> dict:
@@ -202,6 +227,27 @@ def test_an_ocr_page_that_kept_less_than_the_text_lanes_page_is_not_used(monkeyp
     ocr_pages = {0: layer(words=3), 1: layer()}
     result = ocr_lane_over(monkeypatch, healthy, text_pages, ocr_pages, {0: layer(), 1: layer()})
     assert result["markdown"] == f"{layer(words=6)}\n\n{layer()}" and result["ocr_pages"] == 1
+
+
+def test_an_empty_ocr_page_keeps_the_text_lanes_page_without_failing_the_job(monkeypatch, healthy):
+    text_pages = {0: layer(words=4), 1: layer(words=4)}
+    result = ocr_lane_over(monkeypatch, healthy, text_pages, {0: "", 1: ""}, {0: layer(), 1: layer()})
+    assert result["markdown"] == f"{layer(words=4)}\n\n{layer(words=4)}" and result["ocr_pages"] == 0
+
+
+def test_digitless_ocr_pages_do_not_fail_a_partial_conversion_that_requires_digits(monkeypatch, healthy):
+    monkeypatch.setattr(conversion, "_limits", TriageLimits(require_digits=True))
+    result = ocr_lane_over(monkeypatch, healthy, {0: layer(words=4)}, {0: layer()}, {0: layer()})
+    assert result["markdown"] == layer() and result["ocr_pages"] == 1
+
+
+def test_an_ocr_page_that_misreads_a_number_is_not_used(monkeypatch, healthy):
+    layer_text = f"{layer(words=6)} 5,5 3.7"
+    text_pages = {0: f"{layer(words=4)} 5,5 3.7"}
+    misread = {0: f"{layer()} 5,6 3.7"}
+    result = ocr_lane_over(monkeypatch, healthy, text_pages, misread, {0: layer_text})
+    assert result["markdown"] == text_pages[0] and result["ocr_pages"] == 0
+    assert ocr_lane_over(monkeypatch, healthy, text_pages, {0: f"{layer()} 5,5 3.7"}, {0: layer_text})["ocr_pages"] == 1
 
 
 def test_a_dead_ocr_server_fails_a_partial_conversion_too(monkeypatch, healthy):

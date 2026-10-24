@@ -19,9 +19,13 @@ INVISIBLE_RENDER_MODES = {pdfium_c.FPDF_TEXTRENDERMODE_INVISIBLE, pdfium_c.FPDF_
 
 # A number keeps its decimal and thousands separators ("1.234,5"); a word is a run of letters
 TOKEN = re.compile(r"\d+(?:[.,]\d+)*|[^\W\d_]+")
-# A word hyphenated across lines ("hemo-" then "globina"), and the tags Marker writes for exponents
-LINE_BREAK_HYPHEN = re.compile(r"(?<=[^\W\d_])-[ \t]*\r?\n[ \t]*(?=[^\W\d_A-Z])")
+# A word hyphenated across lines ("hemo-" then "globina") in markdown, and the same in pdfium's text, which writes
+# the hyphen and the break as one \x02
+LINE_BREAK_HYPHEN = re.compile(r"(?<=[^\W\d_])-[ \t]*\r?\n[ \t]*(\S?)")
+PDFIUM_HYPHEN = re.compile(r"\x02(.?)")
 EXPONENT_TAG = re.compile(r"</?su[bp]>")
+# A page that lost fewer tokens than this isn't worth an OCR
+MIN_LOST_TOKENS = 2
 
 
 class OcrErrorResult(Protocol):
@@ -44,6 +48,8 @@ class TriageLimits:
     require_digits: bool = False
     # A text-lane page that kept less than this share of its text layer's words and numbers is lossy
     min_text_coverage: float = 0.98
+    # At most this many lossy pages are OCR'd in one reroute, the lowest-scoring first
+    max_rerouted_pages: int = 4
 
 
 @dataclass
@@ -168,25 +174,47 @@ def looks_empty(markdown: str, require_digits: bool = False) -> bool:
     return require_digits and not any(char.isdigit() for char in content)
 
 
+def _join_hyphenated(match: re.Match) -> str:
+    """Drops the hyphen of a word split across lines when the next line goes on in lower case ("hemo-globina")."""
+    return match.group(1) if match.group(1).islower() else match.group(0)
+
+
 def _tokens(text: str) -> Counter[str]:
+    text = PDFIUM_HYPHEN.sub(lambda match: match.group(1) if match.group(1).islower() else "-" + match.group(1), text)
     text = unicodedata.normalize("NFKC", EXPONENT_TAG.sub("", text))
     text = "".join(char for char in text if char in "\t\n\r" or unicodedata.category(char) not in ("Cc", "Cf"))
-    text = unicodedata.normalize("NFD", LINE_BREAK_HYPHEN.sub("", text))
+    text = unicodedata.normalize("NFD", LINE_BREAK_HYPHEN.sub(_join_hyphenated, text))
     plain = "".join(char for char in text if not unicodedata.combining(char))
     return Counter(TOKEN.findall(plain.casefold()))
+
+
+def _kept_and_total(text_layer: str, markdown: str) -> tuple[int, int]:
+    wanted = _tokens(text_layer)
+    return sum((wanted & _tokens(markdown)).values()), wanted.total()
 
 
 def text_coverage(text_layer: str, markdown: str) -> float:
     """The share of the text layer's words and numbers that the markdown kept, counting repeats. 1 when the text
     layer has none."""
-    wanted = _tokens(text_layer)
-    total = wanted.total()
-    if not total:
-        return 1.0
-    return sum((wanted & _tokens(markdown)).values()) / total
+    kept, total = _kept_and_total(text_layer, markdown)
+    return kept / total if total else 1.0
+
+
+def _numbers(text: str) -> Counter[str]:
+    return Counter({token: count for token, count in _tokens(text).items() if token[0].isdigit()})
+
+
+def numbers_lost(before: str, after: str) -> bool:
+    """True if `after` is missing a number that `before` has, counting repeats."""
+    return bool(_numbers(before) - _numbers(after))
 
 
 def lossy_pages(page_texts: list[str], page_markdown: dict[int, str], min_coverage: float) -> dict[int, float]:
-    """The coverage of each page that kept less than min_coverage of its text layer, by page index."""
-    coverage = {index: text_coverage(text, page_markdown.get(index, "")) for index, text in enumerate(page_texts)}
-    return {index: value for index, value in coverage.items() if value < min_coverage}
+    """The coverage of each page that kept less than min_coverage of its text layer, by page index. A page that lost
+    only a token or two isn't counted."""
+    lossy = {}
+    for index, text in enumerate(page_texts):
+        kept, total = _kept_and_total(text, page_markdown.get(index, ""))
+        if total - kept >= MIN_LOST_TOKENS and kept / total < min_coverage:
+            lossy[index] = kept / total
+    return lossy

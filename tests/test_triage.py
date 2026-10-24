@@ -6,7 +6,15 @@ import pytest
 
 from ocr_extractor.conversion import split_pages
 from ocr_extractor.pdfgen import text_pdf
-from ocr_extractor.triage import TriageLimits, looks_empty, lossy_pages, read_pages, text_coverage, triage
+from ocr_extractor.triage import (
+    TriageLimits,
+    looks_empty,
+    lossy_pages,
+    numbers_lost,
+    read_pages,
+    text_coverage,
+    triage,
+)
 from pdfs import FULL_PAGE, image_pdf
 
 LIMITS = TriageLimits()
@@ -186,8 +194,17 @@ def test_text_coverage_joins_words_hyphenated_across_lines():
     assert text_coverage("hemoglobina", "hemo-\nglobina") == 1
 
 
-def test_text_coverage_keeps_a_hyphen_before_a_capital_or_a_number():
-    assert text_coverage("anti-\nHIV 1-\n2", "anti HIV 1 2") == 1
+def test_text_coverage_reads_pdfiums_line_end_hyphen():
+    assert text_coverage("Hemo\x02globina \x02total", "hemoglobina total") == 1
+    assert text_coverage("Anti\x02HBs 1\x022", "anti-HBs 1-2") == 1
+    assert text_coverage("anti\x02\u00c9xito", "anti-\u00c9xito") == 1
+    assert text_coverage("hemo\x02\u00e9mico", "hemo\u00e9mico") == 1
+
+
+def test_text_coverage_joins_a_markdown_hyphen_only_before_lower_case():
+    assert text_coverage("anti-HBs hemoglobina", "anti-\nHBs hemo-\nglobina") == 1
+    assert text_coverage("anti \u00c9xito", "anti-\n\u00c9xito") == 1
+    assert text_coverage("hemo\u00e9mico", "hemo-\n\u00e9mico") == 1
 
 
 def test_lossy_pages_scores_each_page_against_its_own_text_layer():
@@ -195,8 +212,19 @@ def test_lossy_pages_scores_each_page_against_its_own_text_layer():
     markdown = {0: "alpha bravo charlie delta", 1: "echo foxtrot", 2: "alpha bravo india juliet"}
     assert lossy_pages(layers, markdown, 0.9) == {1: 0.5}
     assert lossy_pages(layers, markdown, 0.5) == {}
+    assert lossy_pages(layers, {0: layers[0], 1: layers[1], 2: "india"}, 0.9) == {}
+    assert lossy_pages(layers, {0: layers[0], 1: layers[1], 2: ""}, 0.9) == {2: 0}
+    assert lossy_pages(layers, {0: "alpha bravo charlie", 1: layers[1], 2: layers[2]}, 0.9) == {}
+    assert lossy_pages(layers, {0: "alpha bravo", 1: layers[1], 2: layers[2]}, 0.9) == {0: 0.5}
     assert lossy_pages(layers, markdown, 0) == {}
     assert lossy_pages(layers, {}, 0.9) == {0: 0, 1: 0, 2: 0}
+
+
+def test_numbers_lost_counts_repeats_and_ignores_words():
+    assert not numbers_lost("Glucosa 5,5 mg 98 98", "98 5,5 98 glucemia")
+    assert numbers_lost("Glucosa 5,5 98 98", "98 5,5")
+    assert numbers_lost("5,5", "5.5")
+    assert not numbers_lost("", "anything 7")
 
 
 def test_a_text_lane_triage_carries_each_pages_text_layer(digital_pdf: Path, tmp_path: Path):
