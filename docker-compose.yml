@@ -9,6 +9,7 @@ services:
       OCR_API_KEY: ${OCR_API_KEY:?Set OCR_API_KEY to a long random string, the same one clients send}
       ALLOWED_SOURCE_HOSTS: ${ALLOWED_SOURCE_HOSTS:?Set ALLOWED_SOURCE_HOSTS to the hosts job URLs may point to}
       REQUIRE_DIGITS: ${REQUIRE_DIGITS:-false}
+      MIN_TEXT_COVERAGE: ${MIN_TEXT_COVERAGE:-0.9}
       TEXT_WORKERS: ${TEXT_WORKERS:-2}
       OCR_WORKERS: ${OCR_WORKERS:-1}
       TORCH_THREADS_PER_WORKER: ${TORCH_THREADS_PER_WORKER:-2}
