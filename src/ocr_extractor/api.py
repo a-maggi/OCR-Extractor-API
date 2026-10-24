@@ -46,6 +46,8 @@ def process_executor_factory(settings: Settings) -> Callable[[], ProcessPoolExec
                 image_coverage=settings.IMAGE_COVERAGE_THRESHOLD,
                 image_page_min_chars=settings.IMAGE_PAGE_MIN_CHARS,
                 require_digits=settings.REQUIRE_DIGITS,
+                min_text_coverage=settings.MIN_TEXT_COVERAGE,
+                max_rerouted_pages=settings.MAX_REROUTED_PAGES,
             ),
         ),
     )

@@ -1,11 +1,20 @@
 from dataclasses import dataclass
 from pathlib import Path
 
+import pypdfium2 as pdfium
 import pytest
 
 from ocr_extractor.conversion import split_pages
 from ocr_extractor.pdfgen import text_pdf
-from ocr_extractor.triage import TriageLimits, looks_empty, read_pages, triage
+from ocr_extractor.triage import (
+    TriageLimits,
+    looks_empty,
+    lossy_pages,
+    numbers_misread,
+    read_pages,
+    text_coverage,
+    triage,
+)
 from pdfs import FULL_PAGE, image_pdf
 
 LIMITS = TriageLimits()
@@ -142,6 +151,97 @@ def test_looks_empty():
 def test_looks_empty_with_required_digits():
     assert looks_empty("Northwind Supplies\n\nTerms and conditions", require_digits=True)
     assert not looks_empty("| Paper A4 | 10 | 4.20 | 42.00 |", require_digits=True)
+
+
+def test_text_coverage_is_the_share_of_the_text_layers_tokens_the_markdown_kept():
+    layer = "Monocitos 0,5 10 mg/dL"
+    assert text_coverage(layer, "| Monocitos | 0,5 | 10 | mg/dL |") == 1
+    assert text_coverage(layer, "| 0,5 | 10 | mg/dL |") == 0.8
+    assert text_coverage(layer, "") == 0
+
+
+def test_text_coverage_ignores_case_accents_and_markdown():
+    assert text_coverage("Ácido ÚRICO plasmático", "**Acido urico** plasmatico") == 1
+
+
+def test_text_coverage_keeps_numbers_whole_with_comma_or_point():
+    assert text_coverage("1,5 and 1.5", "1,5 and 1.5") == 1
+    assert text_coverage("1,5 2.25", "1 5 2 25") == 0
+    assert text_coverage("1.234,5", "1.234,5") == 1
+
+
+def test_text_coverage_counts_repeats():
+    assert text_coverage("mg mg mg mg", "mg") == 0.25
+
+
+def test_text_coverage_of_a_text_layer_without_tokens_is_complete():
+    assert text_coverage("  -- ", "") == 1
+
+
+def test_text_coverage_folds_compatibility_characters():
+    assert text_coverage("10\u00b3/\u00b5L", "10<sup>3</sup>/\u03bcL") == 1
+    assert text_coverage("\u00b5mol \uff11\uff12\uff13", "\u03bcmol 123") == 1
+    assert text_coverage("m\u00b2", "m2") == 1
+
+
+def test_text_coverage_ignores_invisible_characters():
+    assert text_coverage("hemo\u00adglobina gluc\u200bosa\x0c 5", "hemoglobina glucosa 5") == 1
+
+
+def test_text_coverage_joins_words_hyphenated_across_lines():
+    assert text_coverage("hemo-\nglobina total", "hemoglobina total") == 1
+    assert text_coverage("hemo-\r\n  globina", "hemoglobina") == 1
+    assert text_coverage("hemoglobina", "hemo-\nglobina") == 1
+
+
+def test_text_coverage_reads_pdfiums_line_end_hyphen():
+    assert text_coverage("Hemo\x02globina \x02total", "hemoglobina total") == 1
+    assert text_coverage("Anti\x02HBs 1\x022", "anti-HBs 1-2") == 1
+    assert text_coverage("anti\x02\u00c9xito", "anti-\u00c9xito") == 1
+    assert text_coverage("hemo\x02\u00e9mico", "hemo\u00e9mico") == 1
+
+
+def test_text_coverage_joins_a_markdown_hyphen_only_before_lower_case():
+    assert text_coverage("anti-HBs hemoglobina", "anti-\nHBs hemo-\nglobina") == 1
+    assert text_coverage("anti \u00c9xito", "anti-\n\u00c9xito") == 1
+    assert text_coverage("hemo\u00e9mico", "hemo-\n\u00e9mico") == 1
+
+
+def test_lossy_pages_scores_each_page_against_its_own_text_layer():
+    layers = ["alpha bravo charlie delta", "echo foxtrot golf hotel", "india juliet"]
+    markdown = {0: "alpha bravo charlie delta", 1: "echo foxtrot", 2: "alpha bravo india juliet"}
+    assert lossy_pages(layers, markdown, 0.9) == {1: 0.5}
+    assert lossy_pages(layers, markdown, 0.5) == {}
+    assert lossy_pages(layers, {0: layers[0], 1: layers[1], 2: "india"}, 0.9) == {}
+    assert lossy_pages(layers, {0: layers[0], 1: layers[1], 2: ""}, 0.9) == {2: 0}
+    assert lossy_pages(layers, {0: "alpha bravo charlie", 1: layers[1], 2: layers[2]}, 0.9) == {}
+    assert lossy_pages(layers, {0: "alpha bravo", 1: layers[1], 2: layers[2]}, 0.9) == {0: 0.5}
+    assert lossy_pages(layers, markdown, 0) == {}
+    assert lossy_pages(layers, {}, 0.9) == {0: 0, 1: 0, 2: 0}
+
+
+def test_a_misread_is_a_lost_number_together_with_one_the_text_layer_never_had():
+    layer = "Glucosa 5,5 mg 98 98 Tel 4444 1"
+    text_page = "Glucosa 5,5 98 98 Tel 4444 1"
+    assert not numbers_misread(layer, text_page, "Glucosa 5,5 98 98")  # a dropped line
+    assert not numbers_misread(layer, text_page, "Glucosa 5,5 98 98 Tel 4444")  # a lone footnote marker
+    assert not numbers_misread(layer, text_page, text_page + " 98")  # nothing lost
+    assert numbers_misread(layer, text_page, "Glucosa 5,8 98 98 Tel 4444 1")  # 5,5 read as 5,8
+    assert numbers_misread(layer, text_page, "Glucosa 5.5 98 98 Tel 4444 1")  # a separator the layer never used
+    assert numbers_misread(layer, text_page, "Glucosa 5,5 98 Tel 4444 1 77")  # a repeat lost, a new number invented
+
+
+def test_a_text_lane_triage_carries_each_pages_text_layer(digital_pdf: Path, tmp_path: Path):
+    second = write(tmp_path, "second.pdf", text_pdf(["Second page, glucose 98 mg/dL"]))
+    document = pdfium.PdfDocument(str(digital_pdf))
+    document.import_pages(pdfium.PdfDocument(str(second)))
+    path = tmp_path / "two-pages.pdf"
+    document.save(str(path))
+
+    result = triage(path, all_good, LIMITS)
+    assert result.lane == "text" and result.pages == 2
+    assert "Toner cartridge 2 x 38.50" in result.page_texts[0]
+    assert "glucose 98" in result.page_texts[1] and "Toner" not in result.page_texts[1]
 
 
 def test_split_pages_reads_markers_page_breaks():

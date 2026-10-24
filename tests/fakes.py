@@ -5,6 +5,7 @@ import time
 from pathlib import Path
 
 from ocr_extractor.errors import NoReadableText, OcrServerUnavailable
+from ocr_extractor.lanes import ConversionTimeout, WorkerCrashed
 
 # Calls per document, for fakes that fail the first time. Thread slots share it; process slots don't
 calls: dict[str, int] = {}
@@ -23,10 +24,20 @@ def fake_text_lane(path: str) -> dict:
         return {"route": "ocr", "reason": "page 1 has no visible text", "pages": 1, "force_ocr": b"layer" in content}
     if b"hollow" in content:
         return {"route": "ocr", "reason": "the text layer had no real content", "pages": 1, "force_ocr": True}
+    if b"lossy" in content:
+        # Page 2 of 2 lost text; the text lane's own result is what a failed OCR move falls back on
+        kept = {"markdown": "Invoice total 119.00", "pages": 2, "ocr_pages": 0}
+        return {
+            "route": "ocr",
+            "reason": "the text lane lost part of the text layer: page 2 kept 78%",
+            "pages": 2,
+            "force_ocr": True,
+            "partial": {"layers": {1: "Invoice total 119.00"}, "text_result": kept},
+        }
     return {"markdown": "Invoice total 119.00", "pages": 1, "ocr_pages": 0}
 
 
-def fake_ocr_lane(path: str, force_ocr: bool) -> dict:
+def fake_ocr_lane(path: str, force_ocr: bool, partial: dict | None = None) -> dict:
     content = Path(path).read_bytes()
     calls[content.decode("latin-1")] = calls.get(content.decode("latin-1"), 0) + 1
     if b"slow" in content:
@@ -37,7 +48,17 @@ def fake_ocr_lane(path: str, force_ocr: bool) -> dict:
         raise OcrServerUnavailable("The OCR model server stopped responding during the conversion")
     if b"unreadable" in content:
         raise NoReadableText("OCR found no readable text in the document")
-    return {"markdown": f"Scanned total 119.00 force_ocr={force_ocr}", "pages": 1, "ocr_pages": 1}
+    if b"bug" in content:
+        raise RuntimeError("boom")
+    if b"timeout" in content:
+        raise ConversionTimeout("Conversion timed out after 600s")
+    if b"crash" in content:
+        raise WorkerCrashed("The worker process crashed")
+    return {
+        "markdown": f"Scanned total 119.00 partial={partial is not None} force_ocr={force_ocr}",
+        "pages": 1,
+        "ocr_pages": 1,
+    }
 
 
 def fake_pdf_for(url: str) -> bytes:
