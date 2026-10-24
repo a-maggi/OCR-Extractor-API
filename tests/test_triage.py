@@ -5,7 +5,7 @@ import pytest
 
 from ocr_extractor.conversion import split_pages
 from ocr_extractor.pdfgen import text_pdf
-from ocr_extractor.triage import TriageLimits, looks_empty, read_pages, triage
+from ocr_extractor.triage import TriageLimits, looks_empty, read_pages, text_coverage, triage
 from pdfs import FULL_PAGE, image_pdf
 
 LIMITS = TriageLimits()
@@ -142,6 +142,36 @@ def test_looks_empty():
 def test_looks_empty_with_required_digits():
     assert looks_empty("Northwind Supplies\n\nTerms and conditions", require_digits=True)
     assert not looks_empty("| Paper A4 | 10 | 4.20 | 42.00 |", require_digits=True)
+
+
+def test_text_coverage_is_the_share_of_the_text_layers_tokens_the_markdown_kept():
+    layer = "Monocitos 0,5 10 mg/dL"
+    assert text_coverage(layer, "| Monocitos | 0,5 | 10 | mg/dL |") == 1
+    assert text_coverage(layer, "| 0,5 | 10 | mg/dL |") == 0.8
+    assert text_coverage(layer, "") == 0
+
+
+def test_text_coverage_ignores_case_accents_and_markdown():
+    assert text_coverage("Ácido ÚRICO plasmático", "**Acido urico** plasmatico") == 1
+
+
+def test_text_coverage_keeps_numbers_whole_with_comma_or_point():
+    assert text_coverage("1,5 and 1.5", "1,5 and 1.5") == 1
+    assert text_coverage("1,5 2.25", "1 5 2 25") == 0
+    assert text_coverage("1.234,5", "1.234,5") == 1
+
+
+def test_text_coverage_counts_repeats():
+    assert text_coverage("mg mg mg mg", "mg") == 0.25
+
+
+def test_text_coverage_of_a_text_layer_without_tokens_is_complete():
+    assert text_coverage("  -- ", "") == 1
+
+
+def test_a_text_lane_triage_carries_the_text_layer(digital_pdf: Path):
+    result = triage(digital_pdf, all_good, LIMITS)
+    assert "Toner cartridge 2 x 38.50" in result.text
 
 
 def test_split_pages_reads_markers_page_breaks():

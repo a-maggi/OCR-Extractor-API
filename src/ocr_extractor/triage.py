@@ -3,6 +3,9 @@
 Runs inside a text-lane worker, before conversion. It never calls the OCR model, so it stays cheap on CPU.
 """
 
+import re
+import unicodedata
+from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Literal, Protocol, Sequence
@@ -13,6 +16,9 @@ import pypdfium2.raw as pdfium_c
 Lane = Literal["text", "ocr"]
 
 INVISIBLE_RENDER_MODES = {pdfium_c.FPDF_TEXTRENDERMODE_INVISIBLE, pdfium_c.FPDF_TEXTRENDERMODE_UNKNOWN}
+
+# A number keeps its decimal and thousands separators ("1.234,5"); a word is a run of letters
+TOKEN = re.compile(r"\d+(?:[.,]\d+)*|[^\W\d_]+")
 
 
 class OcrErrorResult(Protocol):
@@ -33,6 +39,8 @@ class TriageLimits:
     image_page_min_chars: int = 200
     # Output without a single digit counts as empty, for documents that always contain numbers
     require_digits: bool = False
+    # Text-lane output that kept less than this share of the text layer's words and numbers is lossy
+    min_text_coverage: float = 0.9
 
 
 @dataclass
@@ -61,6 +69,8 @@ class TriageResult:
     pages: int
     # The PDF carries a scanner's invisible OCR layer: OCR should replace it rather than trust it
     replace_ocr_layer: bool = False
+    # Every page's text layer, for checking what the conversion kept
+    text: str = ""
 
 
 def _image_coverage(page: pdfium.PdfPage, images: list[tuple[float, float, float, float]]) -> float:
@@ -143,7 +153,7 @@ def triage(path: Path, ocr_error_model: OcrErrorModel, limits: TriageLimits) -> 
         if bad:
             return TriageResult("ocr", f"garbled text on page {', '.join(bad)}", len(pages))
 
-    return TriageResult("text", "text layer looks good", len(pages))
+    return TriageResult("text", "text layer looks good", len(pages), text="\n".join(page.text for page in pages))
 
 
 def looks_empty(markdown: str, require_digits: bool = False) -> bool:
@@ -153,3 +163,18 @@ def looks_empty(markdown: str, require_digits: bool = False) -> bool:
     if len(content) < 10:
         return True
     return require_digits and not any(char.isdigit() for char in content)
+
+
+def _tokens(text: str) -> Counter[str]:
+    plain = "".join(char for char in unicodedata.normalize("NFD", text) if not unicodedata.combining(char))
+    return Counter(TOKEN.findall(plain.casefold()))
+
+
+def text_coverage(text_layer: str, markdown: str) -> float:
+    """The share of the text layer's words and numbers that the markdown kept, counting repeats. 1 when the text
+    layer has none."""
+    wanted = _tokens(text_layer)
+    total = wanted.total()
+    if not total:
+        return 1.0
+    return sum((wanted & _tokens(markdown)).values()) / total
