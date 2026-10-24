@@ -43,6 +43,18 @@ async def test_a_slow_ocr_job_does_not_block_text_jobs(make_registry):
         await registry.stop()
 
 
+async def test_lossy_text_lane_output_moves_to_ocr_with_its_coverage_as_the_reason(make_registry):
+    registry = make_registry()
+    await registry.start()
+    try:
+        lossy, _ = registry.submit("lossy", BASE + "lossy", force_ocr=False)
+        await wait_until_finished(registry, ["lossy"])
+        assert lossy.lane == "ocr" and lossy.markdown.endswith("force_ocr=True")
+        assert lossy.reason == "the text lane lost part of the text layer (coverage 78%)"
+    finally:
+        await registry.stop()
+
+
 async def test_empty_text_layer_output_moves_to_ocr_with_every_page_forced(make_registry):
     registry = make_registry()
     await registry.start()

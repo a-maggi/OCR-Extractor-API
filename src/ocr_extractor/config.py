@@ -38,6 +38,8 @@ class Settings(BaseSettings):
     # digital; less is a scan with a digital stamp or footer on top
     IMAGE_COVERAGE_THRESHOLD: float = Field(default=0.65, gt=0, le=1)
     IMAGE_PAGE_MIN_CHARS: int = Field(default=200, ge=1)
+    # Text-lane output that kept less than this share of the text layer's words and numbers moves to the OCR lane
+    MIN_TEXT_COVERAGE: float = Field(default=0.9, ge=0, le=1)
     SSE_PING_SECONDS: float = Field(default=15, gt=0)
 
     # Start llama-server (the Surya OCR model) at boot instead of on the first scanned document

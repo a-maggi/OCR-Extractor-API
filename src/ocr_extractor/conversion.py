@@ -11,7 +11,7 @@ import re
 from pathlib import Path
 
 from ocr_extractor.errors import NoReadableText, OcrServerUnavailable
-from ocr_extractor.triage import TriageLimits, looks_empty, triage
+from ocr_extractor.triage import TriageLimits, looks_empty, text_coverage, triage
 
 _models: dict | None = None
 _limits = TriageLimits()
@@ -110,6 +110,15 @@ def text_lane(path: str) -> dict:
         return {
             "route": "ocr",
             "reason": "the text layer had no real content",
+            "pages": converted["pages"],
+            "force_ocr": True,
+        }
+    coverage = text_coverage(result.text, converted["markdown"])
+    if coverage < _limits.min_text_coverage:
+        # Marker would trust the same text layer again, so OCR every page to read back what it dropped
+        return {
+            "route": "ocr",
+            "reason": f"the text lane lost part of the text layer (coverage {coverage:.0%})",
             "pages": converted["pages"],
             "force_ocr": True,
         }

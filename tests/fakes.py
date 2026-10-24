@@ -23,6 +23,13 @@ def fake_text_lane(path: str) -> dict:
         return {"route": "ocr", "reason": "page 1 has no visible text", "pages": 1, "force_ocr": b"layer" in content}
     if b"hollow" in content:
         return {"route": "ocr", "reason": "the text layer had no real content", "pages": 1, "force_ocr": True}
+    if b"lossy" in content:
+        return {
+            "route": "ocr",
+            "reason": "the text lane lost part of the text layer (coverage 78%)",
+            "pages": 1,
+            "force_ocr": True,
+        }
     return {"markdown": "Invoice total 119.00", "pages": 1, "ocr_pages": 0}
 
 

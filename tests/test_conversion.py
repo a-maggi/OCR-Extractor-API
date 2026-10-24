@@ -86,6 +86,37 @@ def test_text_lane_moves_number_free_output_to_ocr_only_when_digits_are_required
     assert conversion.text_lane(str(digital_pdf))["route"] == "ocr"
 
 
+LAYER = " ".join(f"word{n}" for n in range(20))
+
+
+def text_lane_keeping(monkeypatch, digital_pdf, kept: int) -> dict:
+    """Runs the text lane on a document whose text layer has 20 words, of which the conversion keeps `kept`."""
+    monkeypatch.setattr(
+        conversion, "triage", lambda path, model, limits: TriageResult("text", "text layer looks good", 1, text=LAYER)
+    )
+    monkeypatch.setattr(conversion, "_models", {"ocr_error_model": None})
+    markdown = " ".join(LAYER.split()[:kept])
+    monkeypatch.setattr(conversion, "_convert", fake_convert(markdown, ocr_pages=0, ocr_pages_without_text=0))
+    return conversion.text_lane(str(digital_pdf))
+
+
+def test_text_lane_moves_a_lossy_conversion_to_ocr_with_every_page_read(monkeypatch, digital_pdf):
+    result = text_lane_keeping(monkeypatch, digital_pdf, kept=16)
+    assert result["route"] == "ocr" and result["force_ocr"]
+    assert result["reason"] == "the text lane lost part of the text layer (coverage 80%)"
+
+
+def test_text_lane_keeps_a_conversion_that_covers_the_text_layer(monkeypatch, digital_pdf):
+    assert "route" not in text_lane_keeping(monkeypatch, digital_pdf, kept=19)
+
+
+def test_the_coverage_threshold_comes_from_the_limits(monkeypatch, digital_pdf):
+    monkeypatch.setattr(conversion, "_limits", TriageLimits(min_text_coverage=0.5))
+    assert "route" not in text_lane_keeping(monkeypatch, digital_pdf, kept=16)
+    monkeypatch.setattr(conversion, "_limits", TriageLimits(min_text_coverage=0.9))
+    assert text_lane_keeping(monkeypatch, digital_pdf, kept=16)["route"] == "ocr"
+
+
 @dataclass
 class FakeHandle:
     base_url: str
