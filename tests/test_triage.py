@@ -174,6 +174,26 @@ def test_a_text_lane_triage_carries_the_text_layer(digital_pdf: Path):
     assert "Toner cartridge 2 x 38.50" in result.text
 
 
+def test_text_coverage_folds_compatibility_characters():
+    assert text_coverage("10\u00b3/\u00b5L", "10<sup>3</sup>/\u03bcL") == 1
+    assert text_coverage("\u00b5mol \uff11\uff12\uff13", "\u03bcmol 123") == 1
+    assert text_coverage("m\u00b2", "m2") == 1
+
+
+def test_text_coverage_ignores_invisible_characters():
+    assert text_coverage("hemo\u00adglobina gluc\u200bosa\x0c 5", "hemoglobina glucosa 5") == 1
+
+
+def test_text_coverage_joins_words_hyphenated_across_lines():
+    assert text_coverage("hemo-\nglobina total", "hemoglobina total") == 1
+    assert text_coverage("hemo-\r\n  globina", "hemoglobina") == 1
+    assert text_coverage("hemoglobina", "hemo-\nglobina") == 1
+
+
+def test_text_coverage_keeps_a_hyphen_before_a_capital_or_a_number():
+    assert text_coverage("anti-\nHIV 1-\n2", "anti HIV 1 2") == 1
+
+
 def test_split_pages_reads_markers_page_breaks():
     separator = "-" * 48
     markdown = f"{{0}}{separator}\n\nPaper A4 42.00\n\n{{1}}{separator}\n\n\n\n{{2}}{separator}\n\nTotal 119.00"

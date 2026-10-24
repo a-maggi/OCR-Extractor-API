@@ -20,6 +20,10 @@ INVISIBLE_RENDER_MODES = {pdfium_c.FPDF_TEXTRENDERMODE_INVISIBLE, pdfium_c.FPDF_
 # A number keeps its decimal and thousands separators ("1.234,5"); a word is a run of letters
 TOKEN = re.compile(r"\d+(?:[.,]\d+)*|[^\W\d_]+")
 
+# A word hyphenated across lines ("hemo-" then "globina"), and the tags Marker writes for exponents
+LINE_BREAK_HYPHEN = re.compile(r"(?<=[^\W\d_])-[ \t]*\r?\n[ \t]*(?=[^\W\d_A-Z])")
+EXPONENT_TAG = re.compile(r"</?su[bp]>")
+
 
 class OcrErrorResult(Protocol):
     labels: Sequence[str]
@@ -166,7 +170,10 @@ def looks_empty(markdown: str, require_digits: bool = False) -> bool:
 
 
 def _tokens(text: str) -> Counter[str]:
-    plain = "".join(char for char in unicodedata.normalize("NFD", text) if not unicodedata.combining(char))
+    text = unicodedata.normalize("NFKC", EXPONENT_TAG.sub("", text))
+    text = "".join(char for char in text if char in "\t\n\r" or unicodedata.category(char) not in ("Cc", "Cf"))
+    text = unicodedata.normalize("NFD", LINE_BREAK_HYPHEN.sub("", text))
+    plain = "".join(char for char in text if not unicodedata.combining(char))
     return Counter(TOKEN.findall(plain.casefold()))
 
 
