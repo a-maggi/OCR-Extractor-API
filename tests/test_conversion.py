@@ -214,6 +214,11 @@ def test_the_marker_config_selects_the_requested_pages():
     assert conversion.marker_config(disable_ocr=False, force_ocr=True, page_range=[1, 3])["page_range"] == [1, 3]
 
 
+def test_the_marker_config_stops_ignoretext_from_dropping_repeated_blocks():
+    config = conversion.marker_config(disable_ocr=True, force_ocr=False)
+    assert config["IgnoreTextProcessor_common_element_min_blocks"] > 1000
+
+
 @dataclass
 class FakeHandle:
     base_url: str

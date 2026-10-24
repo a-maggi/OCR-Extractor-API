@@ -68,6 +68,8 @@ def marker_config(*, disable_ocr: bool, force_ocr: bool, page_range: list[int] |
         # Lab names and notes about decimal separators live in headers and footers
         "keep_pageheader_in_output": True,
         "keep_pagefooter_in_output": True,
+        # Marker drops a page's first or last text block when it repeats across pages; that took real rows
+        "IgnoreTextProcessor_common_element_min_blocks": 1_000_000,
         # pdftext starts its own process pool above 1 worker, which deadlocks inside ours
         "pdftext_workers": 1,
         "disable_tqdm": True,
