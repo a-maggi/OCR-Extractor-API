@@ -12,7 +12,7 @@ import re
 from pathlib import Path
 
 from ocr_extractor.errors import NoReadableText, OcrServerUnavailable
-from ocr_extractor.triage import TriageLimits, looks_empty, lossy_pages, numbers_lost, text_coverage, triage
+from ocr_extractor.triage import TriageLimits, looks_empty, lossy_pages, numbers_misread, text_coverage, triage
 
 _models: dict | None = None
 _limits = TriageLimits()
@@ -163,13 +163,13 @@ def ocr_lane(path: str, force_ocr: bool, partial: dict | None = None) -> dict:
 
 def _splice_ocr_pages(partial: dict, ocr: dict) -> dict:
     """The text lane's result with each lossy page replaced by its OCR'd text, when that kept more of the text layer
-    and every number the text lane's page had. An empty OCR page therefore never replaces anything."""
+    and doesn't look like a misread (it lost a number and holds one the text layer lacks)."""
     text_result = partial["text_result"]
     pages = dict(text_result["page_markdown"])
     replaced = 0
     for index, layer in partial["layers"].items():
         before, after = pages.get(index, ""), ocr["page_markdown"].get(index, "")
-        if text_coverage(layer, after) > text_coverage(layer, before) and not numbers_lost(before, after):
+        if text_coverage(layer, after) > text_coverage(layer, before) and not numbers_misread(layer, before, after):
             pages[index] = after
             replaced += 1
     return {"markdown": join_pages(pages), "pages": text_result["pages"], "ocr_pages": replaced}

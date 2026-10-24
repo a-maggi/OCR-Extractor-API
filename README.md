@@ -14,7 +14,7 @@ An internal service that turns PDFs into markdown with [Marker 2.0](https://gith
   3. Otherwise Marker converts the text layer in `fast` mode with OCR off: pure CPU, no OCR model.
   4. If that output is nearly empty (or, with `REQUIRE_DIGITS=true`, has no numbers at all), the job moves to the OCR lane once, with every page OCR'd.
   5. Marker's fast mode with OCR off drops lines and tables it can't place. So each page's output is compared with that page's text layer, and a page that kept less than `MIN_TEXT_COVERAGE` of its words and numbers (and lost at least two) is OCR'd in the OCR lane, with `force_ocr`. At most `MAX_REROUTED_PAGES` pages are OCR'd, the lowest-scoring first.
-     - An OCR'd page replaces the text lane's page only if it kept more of the text layer and every number the text lane's page had. Every other page keeps the text layer's text.
+     - An OCR'd page replaces the text lane's page only if it kept more of the text layer and doesn't look like a misread (it lost a number the text lane's page had and holds one the text layer never had). Every other page keeps the text layer's text.
      - The job's `reason` names the pages and what they kept.
      - If the OCR move fails or times out, the job still finishes with the text lane's result: `lane` is `ocr`, `ocr_pages` is 0, and `reason` says OCR failed.
 - **The OCR lane** runs Marker in `fast` mode with OCR on, through the Surya OCR model served by `llama-server`. It keeps the good pages' text and OCRs only the scanned or garbled ones. A document with a scanner's OCR layer gets every page OCR'd, since Marker would otherwise keep that layer as if it were real text.

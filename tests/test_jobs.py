@@ -8,6 +8,13 @@ from ocr_extractor.jobs import JobConflict, JobStatus, QueueFull
 BASE = "https://files.example.com/f/"
 
 
+async def wait_until(condition, timeout: float = 10) -> None:
+    deadline = time.monotonic() + timeout
+    while not condition():
+        assert time.monotonic() < deadline, "condition not reached"
+        await asyncio.sleep(0.02)
+
+
 async def wait_until_finished(registry, job_ids: list[str], timeout: float = 10) -> None:
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
@@ -87,8 +94,7 @@ async def test_cancelling_a_job_during_the_ocr_of_lossy_pages_cancels_it(make_re
     await registry.start()
     try:
         job, _ = registry.submit("lossy", BASE + "lossy-slow", force_ocr=False)
-        await asyncio.sleep(0.4)
-        assert job.status == JobStatus.CONVERTING and job.lane == "ocr"
+        await wait_until(lambda: job.lane == "ocr" and job.status == JobStatus.CONVERTING)
         registry.cancel("lossy")
         await wait_until_finished(registry, ["lossy"])
         assert job.status == JobStatus.FAILED and job.error == "Cancelled"

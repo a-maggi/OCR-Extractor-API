@@ -204,9 +204,12 @@ def _numbers(text: str) -> Counter[str]:
     return Counter({token: count for token, count in _tokens(text).items() if token[0].isdigit()})
 
 
-def numbers_lost(before: str, after: str) -> bool:
-    """True if `after` is missing a number that `before` has, counting repeats."""
-    return bool(_numbers(before) - _numbers(after))
+def numbers_misread(text_layer: str, before: str, after: str) -> bool:
+    """True if `after` lost a number that `before` has and also holds one the text layer never had: what a misread
+    value looks like. Dropping a peripheral line, or a lone footnote marker, isn't."""
+    lost = _numbers(before) - _numbers(after)
+    invented = set(_numbers(after)) - set(_numbers(text_layer))
+    return bool(lost and invented)
 
 
 def lossy_pages(page_texts: list[str], page_markdown: dict[int, str], min_coverage: float) -> dict[int, float]:

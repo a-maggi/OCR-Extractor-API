@@ -242,12 +242,18 @@ def test_digitless_ocr_pages_do_not_fail_a_partial_conversion_that_requires_digi
 
 
 def test_an_ocr_page_that_misreads_a_number_is_not_used(monkeypatch, healthy):
-    layer_text = f"{layer(words=6)} 5,5 3.7"
-    text_pages = {0: f"{layer(words=4)} 5,5 3.7"}
-    misread = {0: f"{layer()} 5,6 3.7"}
-    result = ocr_lane_over(monkeypatch, healthy, text_pages, misread, {0: layer_text})
-    assert result["markdown"] == text_pages[0] and result["ocr_pages"] == 0
-    assert ocr_lane_over(monkeypatch, healthy, text_pages, {0: f"{layer()} 5,5 3.7"}, {0: layer_text})["ocr_pages"] == 1
+    layer_text = f"{layer(words=6)} 5,5 3.7 4444"
+    text_pages = {0: f"{layer(words=4)} 5,5 3.7 4444"}
+    for misread in (f"{layer()} 5,8 3.7 4444", f"{layer()} 5.5 3.7 4444"):
+        result = ocr_lane_over(monkeypatch, healthy, text_pages, {0: misread}, {0: layer_text})
+        assert result["markdown"] == text_pages[0] and result["ocr_pages"] == 0
+
+
+def test_an_ocr_page_that_only_dropped_a_line_is_used(monkeypatch, healthy):
+    layer_text = f"{layer(words=6)} 5,5 3.7 4444"
+    text_pages = {0: f"{layer(words=4)} 5,5 3.7 4444"}
+    result = ocr_lane_over(monkeypatch, healthy, text_pages, {0: f"{layer()} 5,5 3.7"}, {0: layer_text})
+    assert result["markdown"] == f"{layer()} 5,5 3.7" and result["ocr_pages"] == 1
 
 
 def test_a_dead_ocr_server_fails_a_partial_conversion_too(monkeypatch, healthy):

@@ -10,7 +10,7 @@ from ocr_extractor.triage import (
     TriageLimits,
     looks_empty,
     lossy_pages,
-    numbers_lost,
+    numbers_misread,
     read_pages,
     text_coverage,
     triage,
@@ -220,11 +220,15 @@ def test_lossy_pages_scores_each_page_against_its_own_text_layer():
     assert lossy_pages(layers, {}, 0.9) == {0: 0, 1: 0, 2: 0}
 
 
-def test_numbers_lost_counts_repeats_and_ignores_words():
-    assert not numbers_lost("Glucosa 5,5 mg 98 98", "98 5,5 98 glucemia")
-    assert numbers_lost("Glucosa 5,5 98 98", "98 5,5")
-    assert numbers_lost("5,5", "5.5")
-    assert not numbers_lost("", "anything 7")
+def test_a_misread_is_a_lost_number_together_with_one_the_text_layer_never_had():
+    layer = "Glucosa 5,5 mg 98 98 Tel 4444 1"
+    text_page = "Glucosa 5,5 98 98 Tel 4444 1"
+    assert not numbers_misread(layer, text_page, "Glucosa 5,5 98 98")  # a dropped line
+    assert not numbers_misread(layer, text_page, "Glucosa 5,5 98 98 Tel 4444")  # a lone footnote marker
+    assert not numbers_misread(layer, text_page, text_page + " 98")  # nothing lost
+    assert numbers_misread(layer, text_page, "Glucosa 5,8 98 98 Tel 4444 1")  # 5,5 read as 5,8
+    assert numbers_misread(layer, text_page, "Glucosa 5.5 98 98 Tel 4444 1")  # a separator the layer never used
+    assert numbers_misread(layer, text_page, "Glucosa 5,5 98 Tel 4444 1 77")  # a repeat lost, a new number invented
 
 
 def test_a_text_lane_triage_carries_each_pages_text_layer(digital_pdf: Path, tmp_path: Path):
